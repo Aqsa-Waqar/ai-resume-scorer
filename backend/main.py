@@ -3,10 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from extractor import extract_text_from_pdf
 from scorer import score_resume
 from dotenv import load_dotenv
-from google import genai
 import os
 import io
-import json
 
 load_dotenv()
 
@@ -19,52 +17,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+def get_ai_feedback(resume_text: str, job_description: str, matching: list, missing: list) -> dict:
+    
+    jd_lower = job_description.lower()
+    resume_lower = resume_text.lower()
+    
+    recommendations = []
+    
+    if missing:
+        recommendations.append(f"Add these missing keywords to your resume: {', '.join(missing[:5])}")
+    
+    if "java" in jd_lower and "java" not in resume_lower:
+        recommendations.append("Consider learning Java basics — it is required for this role")
+    
+    if "python" in jd_lower and "python" in resume_lower:
+        recommendations.append("Expand your Python experience with specific libraries and projects")
+    
+    if "communication" in jd_lower:
+        recommendations.append("Add a line about teamwork or communication in your summary section")
+    
+    if "sql" in jd_lower and "sql" in resume_lower:
+        recommendations.append("Mention specific SQL queries or database operations you have performed")
 
-def get_ai_feedback(resume_text: str, job_description: str, score: float) -> dict:
-    prompt = f"""You are an expert ATS analyzer and professional resume coach.
+    if "machine learning" in jd_lower or "ml" in jd_lower:
+        recommendations.append("Highlight any ML or AI projects prominently at the top of your resume")
 
-Analyze this resume against the job description and respond in EXACTLY this JSON format, no other text:
+    if "rest api" in jd_lower and "rest" in resume_lower:
+        recommendations.append("Describe the REST APIs you built — mention endpoints, methods, and purpose")
 
-{{
-  "ats_score": <number 0-100>,
-  "matching_skills": ["skill1", "skill2", "skill3"],
-  "missing_keywords": ["keyword1", "keyword2", "keyword3"],
-  "experience_analysis": "2-3 sentences about experience alignment",
-  "recommendations": [
-    "specific tip 1",
-    "specific tip 2",
-    "specific tip 3",
-    "specific tip 4",
-    "specific tip 5"
-  ],
-  "overall_assessment": "2-3 sentence professional summary tailored to this job"
-}}
+    recommendations.append("Quantify your achievements — add numbers and measurable impact to bullet points")
+    recommendations.append("Tailor your summary section specifically to mention this role and company")
 
-Resume: {resume_text[:1200]}
+    score_val = len(matching) / max(len(missing) + len(matching), 1) * 100
+    ats_score = min(int(score_val) + 20, 95)
 
-Job Description: {job_description[:1000]}
+    experience_analysis = f"Your resume shows {len(matching)} matching skills for this role. "
+    if len(missing) > 5:
+        experience_analysis += "There are several skill gaps to address. Focus on your most relevant projects and highlight transferable skills."
+    elif len(missing) > 2:
+        experience_analysis += "You have a partial match. Highlight your relevant projects and emphasize transferable skills."
+    else:
+        experience_analysis += "Strong alignment with the job requirements! Make sure your summary reflects this match clearly."
 
-Return ONLY the JSON object, nothing else."""
+    overall = f"Based on keyword and skill analysis, your resume matches approximately {ats_score}% of this job's requirements. "
+    if missing:
+        overall += f"Priority areas to address: {', '.join(missing[:3])}. "
+    overall += "Tailor your resume specifically for this role to maximize your chances of getting shortlisted."
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt
-        )
-        text = response.text.strip()
-        text = text.replace("```json", "").replace("```", "").strip()
-        return json.loads(text)
-    except Exception as e:
-        print(f"Gemini error: {e}")
-        return {
-            "ats_score": 0,
-            "matching_skills": [],
-            "missing_keywords": [],
-            "experience_analysis": "Could not analyze experience.",
-            "recommendations": ["Add more keywords from job description"],
-            "overall_assessment": "Please try again."
-        }
+    return {
+        "ats_score": ats_score,
+        "experience_analysis": experience_analysis,
+        "recommendations": recommendations[:5],
+        "overall_assessment": overall
+    }
 
 
 @app.get("/")
@@ -85,13 +90,18 @@ async def score(
         return {"error": "Could not extract text from PDF."}
 
     tfidf_result = score_resume(resume_text, job_description)
-    ai_result = get_ai_feedback(resume_text, job_description, tfidf_result["score"])
+    ai_result = get_ai_feedback(
+        resume_text,
+        job_description,
+        tfidf_result["matched_keywords"],
+        tfidf_result["missing_keywords"]
+    )
 
     return {
         "score": tfidf_result["score"],
         "ats_score": ai_result["ats_score"],
-        "matching_skills": ai_result["matching_skills"],
-        "missing_keywords": ai_result["missing_keywords"],
+        "matching_skills": tfidf_result["matched_keywords"],
+        "missing_keywords": tfidf_result["missing_keywords"],
         "experience_analysis": ai_result["experience_analysis"],
         "recommendations": ai_result["recommendations"],
         "overall_assessment": ai_result["overall_assessment"]
