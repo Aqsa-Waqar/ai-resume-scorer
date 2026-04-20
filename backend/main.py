@@ -3,15 +3,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from extractor import extract_text_from_pdf
 from scorer import score_resume
 from dotenv import load_dotenv
-import requests
+from google import genai
 import os
 import io
+import json
 
 load_dotenv()
 
 app = FastAPI(title="AI Resume Scorer API")
 
-# Allow React frontend to talk to this backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,32 +19,53 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def get_ai_feedback(resume_text: str, job_description: str, score: float) -> str:
-    token = os.getenv("HF_API_TOKEN")
-    
-    prompt = f"Give 3 tips to improve this resume for the job. Resume skills: {resume_text[:300]} Job requires: {job_description[:200]} Match score: {score}%. Tips:"
+client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
-    headers = {"Authorization": f"Bearer {token}"}
-    payload = {
-        "inputs": prompt,
-        "parameters": {"max_new_tokens": 200, "temperature": 0.7}
-    }
+def get_ai_feedback(resume_text: str, job_description: str, score: float) -> dict:
+    prompt = f"""You are an expert ATS analyzer and professional resume coach.
+
+Analyze this resume against the job description and respond in EXACTLY this JSON format, no other text:
+
+{{
+  "ats_score": <number 0-100>,
+  "matching_skills": ["skill1", "skill2", "skill3"],
+  "missing_keywords": ["keyword1", "keyword2", "keyword3"],
+  "experience_analysis": "2-3 sentences about experience alignment",
+  "recommendations": [
+    "specific tip 1",
+    "specific tip 2",
+    "specific tip 3",
+    "specific tip 4",
+    "specific tip 5"
+  ],
+  "overall_assessment": "2-3 sentence professional summary tailored to this job"
+}}
+
+Resume: {resume_text[:1200]}
+
+Job Description: {job_description[:1000]}
+
+Return ONLY the JSON object, nothing else."""
 
     try:
-        response = requests.post(
-            "https://api-inference.huggingface.co/models/google/flan-t5-base",
-            headers=headers,
-            json=payload,
-            timeout=30
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt
         )
-        result = response.json()
+        text = response.text.strip()
+        text = text.replace("```json", "").replace("```", "").strip()
+        return json.loads(text)
+    except Exception as e:
+        print(f"Gemini error: {e}")
+        return {
+            "ats_score": 0,
+            "matching_skills": [],
+            "missing_keywords": [],
+            "experience_analysis": "Could not analyze experience.",
+            "recommendations": ["Add more keywords from job description"],
+            "overall_assessment": "Please try again."
+        }
 
-        if isinstance(result, list) and "generated_text" in result[0]:
-            return result[0]["generated_text"].strip()
-        else:
-            return "Tip 1: Add missing keywords from the job description.\nTip 2: Quantify your achievements with numbers.\nTip 3: Tailor your summary to match the role."
-    except Exception:
-        return "Tip 1: Add missing keywords from the job description.\nTip 2: Quantify your achievements with numbers.\nTip 3: Tailor your summary to match the role."
 
 @app.get("/")
 def root():
@@ -56,21 +77,22 @@ async def score(
     resume: UploadFile = File(...),
     job_description: str = Form(...)
 ):
-    # Read uploaded PDF into memory
     pdf_bytes = await resume.read()
     pdf_file = io.BytesIO(pdf_bytes)
-
-    # Extract text
     resume_text = extract_text_from_pdf(pdf_file)
 
     if not resume_text:
-        return {"error": "Could not extract text from PDF. Make sure it's not a scanned image."}
+        return {"error": "Could not extract text from PDF."}
 
-    # Score it
-    result = score_resume(resume_text, job_description)
+    tfidf_result = score_resume(resume_text, job_description)
+    ai_result = get_ai_feedback(resume_text, job_description, tfidf_result["score"])
 
-    # Get AI feedback
-    feedback = get_ai_feedback(resume_text, job_description, result["score"])
-    result["feedback"] = feedback
-
-    return result
+    return {
+        "score": tfidf_result["score"],
+        "ats_score": ai_result["ats_score"],
+        "matching_skills": ai_result["matching_skills"],
+        "missing_keywords": ai_result["missing_keywords"],
+        "experience_analysis": ai_result["experience_analysis"],
+        "recommendations": ai_result["recommendations"],
+        "overall_assessment": ai_result["overall_assessment"]
+    }
