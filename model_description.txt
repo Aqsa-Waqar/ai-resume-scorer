@@ -1,0 +1,23 @@
+ML Brain Description - AI Resume Scorer
+========================================
+
+This project does NOT use a pre-trained model or external paid API.
+
+The core ML logic uses:
+
+1. TF-IDF Vectorization (scikit-learn): 
+   Converts resume and job description text into numerical vectors by 
+   measuring how important each word is across both documents.
+
+2. Cosine Similarity (scikit-learn):
+   Measures the angle between the two TF-IDF vectors to calculate 
+   how closely the resume matches the job description. Score ranges 
+   from 0% (no match) to 100% (perfect match).
+
+3. Custom keyword extraction (scorer.py):
+   Filters meaningful technical keywords from both documents to show 
+   matched and missing skills.
+
+All ML logic is written from scratch in scorer.py using standard 
+scikit-learn functions. No pre-trained model weights are used.
+The feedback system is rule-based logic implemented in main.py.
